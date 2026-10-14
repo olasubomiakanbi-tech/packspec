@@ -194,6 +194,9 @@ td input.w-s{width:76px} td input.w-m{width:110px} td input.w-l{width:190px}
 .note-cell{font-size:12.5px;color:var(--ink);min-width:220px;max-width:340px}
 .diff{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:8px;max-width:80ch}
 .cov{display:inline-flex;align-items:center;gap:8px}
+.bar-num{width:76px!important;padding:6px 8px}
+.bar-break{flex-basis:100%;height:0}
+.bar .scen-desc{flex:1 1 280px}
 .spec{padding:6px 12px 10px;display:flex;flex-direction:column}
 .spec-h{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;margin-top:8px;padding-bottom:3px;border-bottom:1px solid var(--line)}
 .spec-row{display:flex;justify-content:space-between;gap:10px;padding:4px 0;font-size:13px;border-bottom:1px dashed var(--line)}
@@ -215,7 +218,7 @@ tr.alt{cursor:pointer} tr.alt:hover td{background:var(--surface-2)}
       <h1>PackSpec</h1>
       <div class="h1-sub">Packaging Configuration App</div>
       <p>Works out how a supplier should pack each part: parts per box under the box rules, boxes needed in the gravity flow rack for the coverage target, and a squared pallet under 1,500 lb.</p>
-      <ol class="steps"><li><b>1</b>Pick a scenario and a 4 h or 8 h target</li><li><b>2</b>Click a part in the table</li><li><b>3</b>Check the pallet and flow rack views, then copy the spec for the supplier</li></ol>
+      <ol class="steps"><li><b>1</b>Open your parts Excel (or use a test scenario), then set the line rate and a 4, 8 or 12 h target</li><li><b>2</b>Click a part in the table</li><li><b>3</b>Check the pallet and flow rack views, then copy the spec for the supplier</li></ol>
     </div>
     <div class="actions">
       <button id="btn-copy-csv" class="ghost">Copy results (CSV)</button>
@@ -228,8 +231,11 @@ tr.alt{cursor:pointer} tr.alt:hover td{background:var(--surface-2)}
   <section class="bar" aria-label="Scenario">
     <div class="seg" role="group" aria-label="Test scenarios" id="presets"></div>
     <span class="scen-desc" id="scen-desc"></span>
-    <span class="cov"><span class="muted">Production</span><span class="seg" role="group" aria-label="Production type" id="mode-seg"></span></span>
+    <span class="bar-break" aria-hidden="true"></span>
+    <span class="cov"><label class="muted" for="in-uph">Line rate</label><input type="number" id="in-uph" class="bar-num" min="0.1" step="any" inputmode="decimal"><span class="muted">vehicles/h</span></span>
     <span class="cov"><span class="muted">Rack coverage</span><span class="seg" role="group" aria-label="Coverage target" id="cov-seg"></span></span>
+    <span class="cov"><label class="muted" for="in-lanes">Lanes per part</label><input type="number" id="in-lanes" class="bar-num" min="1" step="1" inputmode="numeric" placeholder="varies"></span>
+    <span class="cov"><span class="muted">Production</span><span class="seg" role="group" aria-label="Production type" id="mode-seg"></span></span>
     <label class="toggle"><input type="checkbox" id="chk-baseline" checked> Show current supplier pack</label>
   </section>
 
@@ -414,9 +420,12 @@ function load(){try{const s=JSON.parse(localStorage.getItem(STORE)||"null");if(s
 function renderPresets(){
   $("#presets").innerHTML=Object.entries(PRESETS).map(([k,p])=>`<button type="button" data-preset="${k}" aria-pressed="${!ui.dirty&&ui.preset===k}">${esc(p.label)}</button>`).join("");
   const T=num(data.scenario.T);
-  $("#cov-seg").innerHTML=[4,8].map(h=>`<button type="button" data-cov="${h}" aria-pressed="${T===h}">${h} h</button>`).join("");
+  $("#cov-seg").innerHTML=[4,8,12].map(h=>`<button type="button" data-cov="${h}" aria-pressed="${T===h}">${h} h</button>`).join("");
   $("#mode-seg").innerHTML=[["mixed","Mixed model"],["single","Single model"]].map(([k,l])=>`<button type="button" data-mode="${k}" aria-pressed="${ui.mode===k}">${l}</button>`).join("");
-  $("#scen-desc").textContent=ui.dirty?"Custom inputs. Picking a scenario reloads the test case and replaces your edits.":PRESETS[ui.preset].desc+" Test data are invented.";
+  const u=$("#in-uph"),ln=$("#in-lanes"),act=document.activeElement;
+  if(u&&act!==u)u.value=num(data.scenario.R)??"";
+  if(ln&&act!==ln){const L=[...new Set(data.parts.map(p=>num(p.lanes)))];ln.value=L.length===1&&L[0]!==null?L[0]:""}
+  $("#scen-desc").textContent=ui.dirty?"Your own inputs (opened from Excel or edited). Picking a test scenario replaces them with the test case.":PRESETS[ui.preset].desc+" Test data are invented.";
 }
 const TABS=[["results","Results"],["compare","Mixed vs single"],["check","Calculation check"],["scenario","Scenario & rules"],["parts","Parts & BOM"],["boxes","Boxes"],["carrier","Pallet & dolly"]];
 function renderTabs(){$("#tabs").innerHTML=TABS.map(([k,l])=>`<button type="button" role="tab" data-tab="${k}" aria-selected="${ui.tab===k}">${l}</button>`).join("")}
@@ -424,7 +433,7 @@ let last={errs:[],results:[]};
 function recompute(full){
   last=computeAll(); if(!full)ui.lv=null;
   $("#errors").innerHTML=last.errs.length?`<div class="errors" role="alert"><strong>Results are paused until these inputs are fixed:</strong><ul>${last.errs.map(e=>`<li>${esc(e)}</li>`).join("")}</ul></div>`:"";
-  renderChips(); if(full||ui.tab==="results"||ui.tab==="check")renderView(); renderPresets(); save();
+  renderChips(); if(full||ui.tab==="results"||ui.tab==="check"||ui.tab==="compare")renderView(); renderPresets(); save();
 }
 function renderChips(){
   const r=last.results; if(!r.length){$("#chips").innerHTML="";return}
@@ -670,7 +679,7 @@ function scenarioView(){
     <h3 style="margin:16px 0 8px">Model mix</h3><div class="scroll"><table style="max-width:560px"><thead><tr><th>Variant</th><th class="num">Share %</th><th></th></tr></thead><tbody>
     ${data.variants.map(v=>`<tr><td><input type="text" class="w-l" data-var="${v.key}" data-f="name" value="${esc(v.name)}" aria-label="Variant name"></td><td class="num"><input type="number" class="w-s" data-var="${v.key}" data-f="share" value="${v.share}" step="1" min="0" aria-label="Share of ${esc(v.name)}"></td><td><button type="button" class="small ghost danger" data-delvar="${v.key}">Remove</button></td></tr>`).join("")}
     <tr><td class="muted">Total</td><td class="num mono" id="mix-total">${+sum.toFixed(2)}%</td><td></td></tr></tbody></table></div><button type="button" class="small" id="add-var" style="margin-top:8px">Add variant</button></div>
-  <div class="card"><div class="card-head"><h2>Line-side coverage</h2></div><div class="form-grid">${fld("s-T","Coverage target in the flow rack (h)",s.T,"Usually 4 or 8","step='0.5' min='0'")}${fld("s-alpha","Safety allowance (%)",s.alpha,"Added to the target","step='1' min='0'")}
+  <div class="card"><div class="card-head"><h2>Line-side coverage</h2></div><div class="form-grid">${fld("s-T","Coverage target in the flow rack (h)",s.T,"Usually 4, 8 or 12","step='0.5' min='0'")}${fld("s-alpha","Safety allowance (%)",s.alpha,"Added to the target","step='1' min='0'")}
     <div class="field"><label for="s-rank">Pick the best option by</label><select id="s-rank">${Object.entries(RANKS).map(([k,l])=>`<option value="${k}" ${s.rank===k?"selected":""}>${l}</option>`).join("")}</select><span class="hint">Used when several boxes meet every rule</span></div></div></div>
   <div class="card"><div class="card-head"><h2>Gravity flow rack</h2><span class="muted">One box type per lane; lanes per part are set on the Parts tab</span></div><div class="form-grid">${fld("s-laneDepth","Lane depth (in)",s.laneDepth,"Front to back","step='1' min='0'")}${fld("s-laneWidth","Lane width (in)",s.laneWidth,"Widest box a lane takes","step='1' min='0'")}</div></div>
   <div class="card"><div class="card-head"><h2>Box rules</h2><span class="muted">So every box fits the flow rack and can be lifted by hand</span></div><div class="form-grid">${fld("s-ruleL","Maximum length (in)",s.ruleL,"Default 30","step='1' min='0'")}${fld("s-ruleW","Maximum width (in)",s.ruleW,"Default 30","step='1' min='0'")}${fld("s-ruleH","Maximum height (in)",s.ruleH,"Default 12","step='1' min='0'")}${fld("s-ruleWt","Maximum box weight (lb)",s.ruleWt,"Parts + empty box. Default 30","step='1' min='0'")}</div></div>
@@ -793,6 +802,8 @@ document.addEventListener("input",e=>{
   const el=e.target;if(el.id==="rng-l"){updateL(Number(el.value));return}
   if(el.type==="checkbox"||el.tagName==="SELECT")return;
   const v=el.type==="number"?(el.value===""?null:Number(el.value)):el.value;
+  if(el.id==="in-uph"){data.scenario.R=v;markDirty();recompute(false);return}
+  if(el.id==="in-lanes"){if(num(v)>=1){const n=Math.floor(v);data.scenario.lanesAll=n;data.parts.forEach(p=>p.lanes=n);markDirty();recompute(false);if(ui.tab==="parts")renderView()}return}
   if(el.dataset.s){data.scenario[el.dataset.s]=v;markDirty();recompute(false);return}
   if(el.dataset.c){data.carrier[el.dataset.c]=v;markDirty();recompute(false);return}
   if(el.dataset.var){const x=data.variants.find(q=>q.key===el.dataset.var);x[el.dataset.f]=v;markDirty();const tot=$("#mix-total");if(tot)tot.textContent=+data.variants.reduce((a,q)=>a+(num(q.share)||0),0).toFixed(2)+"%";recompute(false);return}
@@ -846,6 +857,13 @@ function fromWorkbook(buf){
     else if(f==="alpha")scenario.alpha=v===null?0:(v<1?+(v*100).toFixed(4):v);
     else if(f==="rank"){const t=String(col(r,"Value")).trim();if(RANKS[t])scenario.rank=t}
     else if(f in scenario)scenario[f]=v}
+  const pr=rows("Parts",true),hdr=pr.length?Object.keys(pr[0]):[];
+  const qh=hdr.map(k=>{const m=/^\s*QPV\s+(.+?)\s*$/i.exec(k);return m?m[1]:null}).filter(Boolean), plainQ=hdr.some(k=>/^\s*QPV\s*$/i.test(k));
+  if(!variants.length&&qh.length){const cur=data.variants;variants=qh.map((n,i)=>{const byName=cur.find(v=>norm(v.name)===norm(n));
+    return {name:n,share:byName?num(byName.share):(cur.length===qh.length?num(cur[i].share):+(100/qh.length).toFixed(4))}});
+    const t=variants.reduce((a,v)=>a+(v.share||0),0);if(Math.abs(t-100)>0.01)variants.forEach(v=>v.share=+(100/qh.length).toFixed(4))}
+  if(!variants.length&&plainQ)variants=[{name:"All vehicles",share:100}];
+  let noQPV=!qh.length&&!plainQ;
   const vr=rows("Variants");if(vr)variants=vr.map(r=>({name:String(col(r,"Variant")).trim(),share:nv(col(r,"Share"))})).filter(v=>v.name&&v.share!==null&&!/^(total|check)$/i.test(v.name));
   if(!variants.length)variants=data.variants.map(v=>({name:v.name,share:v.share}));
   const tot=variants.reduce((a,v)=>a+v.share,0);if(tot<=1.0001)variants.forEach(v=>v.share=+(v.share*100).toFixed(4));
@@ -857,11 +875,12 @@ function fromWorkbook(buf){
   const fit={};for(const r of (rows("Fit Limits")||[])){const id=String(col(r,"Part Number","Part ID")).trim();if(!id)continue;fit[id]={};
     for(const b of boxes){const v=nv(r[b.id]);if(v!==null&&v>=1)fit[id][b.key]=Math.floor(v)}}
   const noSize=[];
-  const parts=rows("Parts",true).map(r=>{const id=String(col(r,"Part Number","Part ID")).trim();if(!id)return null;
-    const usage={};for(const v of variants){const q=nv(col(r,"QPV "+v.name));usage[v.key]=q===null?(variants.length===1?(nv(col(r,"QPV"))??0):0):q}
+  const lanesDef=num(data.scenario.lanesAll)||4;
+  const parts=pr.map(r=>{const id=String(col(r,"Part Number","Part ID")).trim();if(!id)return null;
+    const usage={};for(const v of variants){const q=nv(col(r,"QPV "+v.name));usage[v.key]=noQPV?1:(q===null?(variants.length===1?(nv(col(r,"QPV"))??0):0):q)}
     const dim={l:nv(col(r,"Length","Part Length")),w:nv(col(r,"Width","Part Width")),h:nv(col(r,"Height","Part Height"))};
     if(nv(col(r,"Unit Weight","Weight"))===null&&dim.l===null&&dim.w===null&&dim.h===null)return null;
-    const p={key:newKey("p"),id,desc:String(col(r,"Description")).trim()||id,w:nv(col(r,"Unit Weight","Weight")),usage,lanes:nv(col(r,"Flow Rack Lanes","Lanes"))??4,dim};
+    const p={key:newKey("p"),id,desc:String(col(r,"Part Name","Description","Title","Name")).trim()||id,w:nv(col(r,"Unit Weight","Weight")),usage,lanes:nv(col(r,"Flow Rack Lanes","Lanes"))??lanesDef,dim};
     p.cap=fit[id]&&Object.keys(fit[id]).length?fit[id]:capsFromDims(p,boxes);
     if(!hasDim(p)){delete p.dim;if(!Object.keys(p.cap).length)noSize.push(id)}
     const cb=byId[String(col(r,"Current Box")).trim()];
@@ -869,6 +888,7 @@ function fromWorkbook(buf){
     return p}).filter(Boolean);
   if(!parts.length)throw new Error("No parts found on the Parts sheet");
   if(noSize.length)throw new Error(`Add length, width and height for ${noSize.slice(0,4).join(", ")}${noSize.length>4?"…":""}`);
+  if(noQPV)setTimeout(()=>toast("No QPV column, so every part is set to 1 per vehicle. Change it on the Parts & BOM tab."),2600);
   return {scenario,variants,boxes,carrier,parts};
 }
 /* ============ Boot ============ */
