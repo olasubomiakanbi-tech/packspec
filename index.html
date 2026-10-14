@@ -190,6 +190,9 @@ td input.w-s{width:76px} td input.w-m{width:110px} td input.w-l{width:190px}
 .usefit{display:inline-flex;align-items:center;gap:6px}.usefit input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent)}
 
 .h1-sub{font-family:var(--display);font-size:19px;font-weight:600;letter-spacing:.02em;color:var(--accent);margin-top:2px}
+.mode-note{background:var(--accent-soft);border:1px solid var(--line);border-radius:8px;padding:10px 14px;font-size:13.5px}
+.note-cell{font-size:12.5px;color:var(--ink);min-width:220px;max-width:340px}
+.diff{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:8px;max-width:80ch}
 .cov{display:inline-flex;align-items:center;gap:8px}
 .spec{padding:6px 12px 10px;display:flex;flex-direction:column}
 .spec-h{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;margin-top:8px;padding-bottom:3px;border-bottom:1px solid var(--line)}
@@ -225,6 +228,7 @@ tr.alt{cursor:pointer} tr.alt:hover td{background:var(--surface-2)}
   <section class="bar" aria-label="Scenario">
     <div class="seg" role="group" aria-label="Test scenarios" id="presets"></div>
     <span class="scen-desc" id="scen-desc"></span>
+    <span class="cov"><span class="muted">Production</span><span class="seg" role="group" aria-label="Production type" id="mode-seg"></span></span>
     <span class="cov"><span class="muted">Rack coverage</span><span class="seg" role="group" aria-label="Coverage target" id="cov-seg"></span></span>
     <label class="toggle"><input type="checkbox" id="chk-baseline" checked> Show current supplier pack</label>
   </section>
@@ -273,7 +277,7 @@ const RANKS={moves:"Fewest box moves",pallet:"Fullest pallet",lanes:"Fewest rack
 
 /* ============ State ============ */
 let data=PRESETS.S1.apply(testCase());
-const ui={tab:"results",sel:"p1",showCur:true,preset:"S1",dirty:false,view:"3d",cfg:"rec",lv:null,mounted:null};
+const ui={tab:"results",sel:"p1",showCur:true,preset:"S1",dirty:false,view:"3d",cfg:"rec",lv:null,mounted:null,mode:"mixed"};
 let uid=100; const newKey=p=>p+(uid++);
 
 /* ============ Helpers ============ */
@@ -373,8 +377,15 @@ function currentPack(d,p,res){
   const palHgt=num(d.carrier.palH)+Math.ceil(layers)*b.z; if(palHgt>num(s.H)+EPS)issues.push(`pallet stands ${fin(palHgt)} in, over the ${s.H} in limit`);
   return {b,n,k,g,lf,need,lanesNeed,moves:res.d*num(s.S)/n,palQ:k*n,load,palHgt,lam:pal.lam,lamA:pal.lamA,lamB:pal.lamB,layers:Math.ceil(layers),issues,ok:!issues.length};
 }
+/* Single model: one model on the line that uses every part, at each part's highest QPV across the variants */
+function singleData(d){
+  const parts=d.parts.map(p=>{const q=Math.max(0,...d.variants.map(v=>num(p.usage[v.key])||0));return {...p,usage:{_one:q}}});
+  return {...d,variants:[{key:"_one",name:"Single model",share:100}],parts};
+}
+function runAll(d){return d.parts.map(p=>{const r=evalPart(d,p);r.cur=currentPack(d,p,r);return r})}
+function activeData(){return ui.mode==="single"?singleData(data):data}
 function computeAll(){const errs=validate(data);if(errs.length)return {errs,results:[]};
-  return {errs,results:data.parts.map(p=>{const r=evalPart(data,p);r.cur=currentPack(data,p,r);return r})}}
+  return {errs,results:runAll(activeData())}}
 
 /* ============ Storage ============ */
 const STORE="pca-data-v5";
@@ -386,9 +397,10 @@ function renderPresets(){
   $("#presets").innerHTML=Object.entries(PRESETS).map(([k,p])=>`<button type="button" data-preset="${k}" aria-pressed="${!ui.dirty&&ui.preset===k}">${esc(p.label)}</button>`).join("");
   const T=num(data.scenario.T);
   $("#cov-seg").innerHTML=[4,8].map(h=>`<button type="button" data-cov="${h}" aria-pressed="${T===h}">${h} h</button>`).join("");
+  $("#mode-seg").innerHTML=[["mixed","Mixed model"],["single","Single model"]].map(([k,l])=>`<button type="button" data-mode="${k}" aria-pressed="${ui.mode===k}">${l}</button>`).join("");
   $("#scen-desc").textContent=ui.dirty?"Custom inputs. Picking a scenario reloads the test case and replaces your edits.":PRESETS[ui.preset].desc+" Test data are invented.";
 }
-const TABS=[["results","Results"],["check","Calculation check"],["scenario","Scenario & rules"],["parts","Parts & BOM"],["boxes","Boxes"],["carrier","Pallet & dolly"]];
+const TABS=[["results","Results"],["compare","Mixed vs single"],["check","Calculation check"],["scenario","Scenario & rules"],["parts","Parts & BOM"],["boxes","Boxes"],["carrier","Pallet & dolly"]];
 function renderTabs(){$("#tabs").innerHTML=TABS.map(([k,l])=>`<button type="button" role="tab" data-tab="${k}" aria-selected="${ui.tab===k}">${l}</button>`).join("")}
 let last={errs:[],results:[]};
 function recompute(full){
@@ -420,7 +432,7 @@ function resultsView(){
       <td class="num">${c.need}</td><td class="num ${c.lanesNeed>num(p.lanes)?"over":""}">${c.lanesNeed??"–"} / ${p.lanes}</td><td class="num">${f1(c.need*c.n/x.d)}</td><td class="num">${f1(c.moves)}</td>
       <td class="num">${c.k} boxes</td><td class="num">${f0(c.palQ)}</td><td class="num ${c.load>palletLimit().v+EPS?"over":""}">${f0(c.load)}</td><td>${c.ok?'<span class="pill good">Within rules</span>':'<span class="pill bad">Breaks rules</span>'}</td></tr>`}
     return h}).join("");
-  return `<div class="card"><div class="card-head"><h2>Recommended supplier packaging</h2><span class="muted">Ranked by: <strong>${RANKS[data.scenario.rank]}</strong>. Select a part to see its spec, pallet, and flow rack.</span></div>
+  return `${ui.mode==="single"?`<div class="mode-note"><strong>Single model.</strong> Every vehicle is the same model and uses every part, at each part\u2019s highest quantity per vehicle. Switch back to Mixed model in the bar above, or open the Mixed vs single tab to compare.</div>`:""}<div class="card"><div class="card-head"><h2>Recommended supplier packaging${ui.mode==="single"?" (single model)":""}</h2><span class="muted">Ranked by: <strong>${RANKS[data.scenario.rank]}</strong>. Select a part to see its spec, pallet, and flow rack.</span></div>
     <div class="scroll"><table><thead><tr><th>Part</th><th class="num">Demand<br>parts/h</th><th class="num">Line-side<br>target</th><th>Box</th><th class="num">QPC</th><th class="num">Box<br>lb</th>
     <th class="num">Boxes<br>in rack</th><th class="num">Lanes<br>used</th><th class="num">Rack<br>cover h</th><th class="num">Box moves<br>per shift</th><th class="num">Pallet<br>per layer × layers</th><th class="num">Parts per<br>pallet</th><th class="num">Pallet<br>load lb</th><th>Status</th></tr></thead>
     <tbody>${rows}</tbody></table></div>
@@ -610,7 +622,7 @@ function checkView(){
   const r=last.results;if(!r.length)return "";
   const x=r.find(y=>y.part.key===ui.sel)||r[0],p=x.part,s=data.scenario,b=x.best,crr=data.carrier;
   const opts=r.map(y=>`<option value="${y.part.key}" ${y.part.key===x.part.key?"selected":""}>${esc(y.part.id)} · ${esc(y.part.desc)}</option>`).join("");
-  const terms=data.variants.map(v=>`${fx(num(v.share)/100)}×${fx(num(p.usage[v.key])||0)}`).join(" + ");
+  const terms=activeData().variants.map(v=>`${fx(num(v.share)/100)}×${fx(num(p.usage[v.key])||0)}`).join(" + ");
   const rows=[],add=(eq,ex)=>rows.push(`<div class="row"><span class="eq">${eq}</span><span class="ex">${ex}</span></div>`);
   add("Demand",`d = UPH × Σ (mix share × QPV) = ${fx(s.R)} × (${terms}) = <b>${f2(x.d)}</b> parts/h`);
   add("Target",`Q = d × T × (1 + α) = ${f2(x.d)} × ${fx(s.T)} × (1 + ${fx(num(s.alpha)/100)}) = <b>${f2(x.Q)}</b> parts in the flow rack`);
@@ -675,9 +687,55 @@ function carrierView(){const c=data.carrier;
   <div class="form-grid">${cfld("X","Pallet length (in)",c.X,"Standard 52")}${cfld("Y","Pallet width (in)",c.Y,"Standard 50")}${cfld("palH","Pallet height (in)",c.palH,"Placeholder")}${cfld("palT","Pallet weight (lb)",c.palT,"Not counted in the 1,500 lb load")}${cfld("dolH","Dolly deck height (in)",c.dolH,"Placeholder")}${cfld("dolT","Dolly weight (lb)",c.dolT,"Only for the AMR payload check")}</div>
   <p class="note">Pallet and dolly heights and weights are placeholders. Replace them with plant values.</p></div>`}
 function renderView(){
-  const v={results:resultsView,check:checkView,scenario:scenarioView,parts:partsView,boxes:boxesView,carrier:carrierView}[ui.tab];
+  const v={results:resultsView,compare:compareView,check:checkView,scenario:scenarioView,parts:partsView,boxes:boxesView,carrier:carrierView}[ui.tab];
   $("#view").innerHTML=`<div class="panel">${v()}</div>`;
   if(ui.tab==="results"){const key=ui.sel+"|"+ui.cfg;mountViewer(ui.mounted!==key);ui.mounted=key}
+}
+
+
+/* ============ Mixed vs single ============ */
+function compareView(){
+  if(last.errs.length)return "";
+  const M=runAll(data), S=runAll(singleData(data)), sd=singleData(data);
+  const row=(m,s)=>{const p=m.part,a=m.best,b=s.best,qm=data.variants.map(v=>`${num(p.usage[v.key])||0}`).join(" / "),qs=sd.parts.find(x=>x.key===p.key).usage._one;
+    const cell=(x,f)=>x?f(x):'<span class="over">no option</span>';
+    let note=[];
+    if(Math.abs(m.d-s.d)<EPS)note.push("Used the same on every variant: same demand and same packaging.");
+    else{note.push(`Demand ${s.d>m.d?"rises":"falls"} from ${f1(m.d)} to ${f1(s.d)} parts/h (×${f1(s.d/m.d)}).`);
+      if(a&&b){if(a.b.key!==b.b.key||a.n!==b.n)note.push(`Box changes from ${a.b.id} (${a.n}) to ${b.b.id} (${b.n}).`);
+        if(a.lanesNeed!==b.lanesNeed)note.push(`Rack lanes ${a.lanesNeed} → ${b.lanesNeed}.`);
+        note.push(`One pallet lasts ${f1(b.palHours)} h instead of ${f1(a.palHours)} h.`)}
+      if(a&&!b)note.push("No box fits the rack target any more: the part needs more lanes or a shorter target.");
+      if(!a&&b)note.push("Now has a workable option.");}
+    if(m.status==="none"&&s.status!=="none")note=[`Not used in the current mix; single model needs ${f1(s.d)} parts/h.`];
+    return `<tr><td><strong class="mono">${esc(p.id)}</strong> <span class="muted">${esc(p.desc)}</span></td>
+      <td class="num mono">${qm}</td><td class="num mono">${qs}</td>
+      <td class="num">${f1(m.d)}<br><span class="muted">${f1(s.d)}</span></td>
+      <td class="mono">${cell(a,x=>`${x.b.id} · ${x.n}`)}<br><span class="muted">${cell(b,x=>`${x.b.id} · ${x.n}`)}</span></td>
+      <td class="num">${cell(a,x=>`${x.need} / ${x.lanesNeed}`)}<br><span class="muted">${cell(b,x=>`${x.need} / ${x.lanesNeed}`)}</span></td>
+      <td class="num">${cell(a,x=>f1(x.moves))}<br><span class="muted">${cell(b,x=>f1(x.moves))}</span></td>
+      <td class="num">${cell(a,x=>`${f0(x.palQ)} · ${f1(x.palHours)} h`)}<br><span class="muted">${cell(b,x=>`${f0(x.palQ)} · ${f1(x.palHours)} h`)}</span></td>
+      <td class="note-cell">${esc(note.join(" "))}</td></tr>`};
+  const sum=(R,f)=>R.reduce((acc,x)=>acc+(x.best?f(x.best):0),0);
+  const okM=M.filter(x=>x.best).length, okS=S.filter(x=>x.best).length, act=M.filter(x=>x.status!=="none").length, actS=S.filter(x=>x.status!=="none").length;
+  const changed=M.filter((m,i)=>{const a=m.best,b=S[i].best;return !a||!b||a.b.key!==b.b.key||a.n!==b.n||a.lanesNeed!==b.lanesNeed}).length;
+  return `<div class="card"><div class="card-head"><h2>Mixed model vs single model</h2><span class="muted">Same parts, boxes, rack, and pallet rules. Top line in each cell = mixed model; grey line = single model.</span></div>
+    <div class="chips" style="margin-bottom:14px">
+      <div class="chip ${okS<actS?"bad":"good"}"><span class="eyebrow">Parts meeting target</span><span class="v">${okM}/${act} → ${okS}/${actS}</span></div>
+      <div class="chip"><span class="eyebrow">Rack lanes used</span><span class="v">${sum(M,b=>b.lanesNeed)} → ${sum(S,b=>b.lanesNeed)}</span></div>
+      <div class="chip"><span class="eyebrow">Box moves per shift</span><span class="v">${f0(sum(M,b=>b.moves))} → ${f0(sum(S,b=>b.moves))}</span></div>
+      <div class="chip"><span class="eyebrow">Parts whose spec changes</span><span class="v">${changed} of ${M.length}</span></div></div>
+    <div class="scroll"><table><thead><tr><th>Part</th><th class="num">QPV<br>${esc(data.variants.map(v=>v.name).join(" / "))}</th><th class="num">QPV<br>single</th><th class="num">Demand<br>parts/h</th><th>Box · QPC</th><th class="num">Boxes / lanes<br>for target</th><th class="num">Box moves<br>per shift</th><th class="num">Parts per pallet<br>· pallet lasts</th><th>What changes</th></tr></thead>
+    <tbody>${M.map((m,i)=>row(m,S[i])).join("")}</tbody></table></div>
+    <p class="note">Single model assumes the line builds one model that uses every part, at the highest quantity per vehicle across the variants, at ${fx(data.scenario.R)} vehicles per hour and a ${fin(num(data.scenario.T))} h target.</p></div>
+  <div class="card"><h2 style="margin-bottom:8px">How the packaging differs</h2>
+    <ul class="diff">
+      <li><strong>Common parts do not change.</strong> A part used the same way on every variant has the same demand either way, so its box, flow rack lanes, and pallet stay the same.</li>
+      <li><strong>Variant parts become full-rate parts.</strong> In a mixed line, a part used on only some variants runs at a fraction of the line rate. With a single model it runs at the full rate, so it needs more boxes in the rack, more lanes, and more box moves, and each pallet is used up faster.</li>
+      <li><strong>Heavy parts feel it most.</strong> The 30 lb box rule caps how many heavy parts go in a box, so a higher demand turns directly into more boxes and lanes. A heavy variant part that fits the rack in a mixed line may not fit with a single model unless it gets more lanes or a shorter target.</li>
+      <li><strong>Mixed lines risk slow movers; single lines do not.</strong> In a mixed line, a low-volume variant part can sit on a pallet for days, so smaller pallets or fewer layers may make sense. With a single model, demand is steady and the same for every vehicle, so full squared pallets and the largest workable box are usually the right choice.</li>
+      <li><strong>Mixed packaging must survive mix changes.</strong> A mixed-line spec should be checked at the highest expected share of each variant (try the S3 Mix shift scenario). A single-model spec only depends on the line rate.</li>
+    </ul></div>`;
 }
 
 /* ============ Supplier spec text ============ */
@@ -695,6 +753,7 @@ const markDirty=()=>{ui.dirty=true};
 document.addEventListener("click",e=>{
   const t=e.target.closest("button,tr.res,tr.alt");if(!t)return;
   if(t.dataset.preset){ui.preset=t.dataset.preset;ui.dirty=false;ui.lv=null;ui.cfg="rec";ui.mounted=null;data=PRESETS[ui.preset].apply(testCase());recompute(true);return}
+  if(t.dataset.mode){ui.mode=t.dataset.mode;ui.cfg="rec";ui.lv=null;ui.mounted=null;recompute(true);return}
   if(t.dataset.cov){data.scenario.T=Number(t.dataset.cov);markDirty();ui.mounted=null;recompute(true);return}
   if(t.dataset.tab){ui.tab=t.dataset.tab;renderTabs();renderView();try{localStorage.setItem("pca-tab5",ui.tab)}catch(_){}return}
   if(t.dataset.sel){if(ui.sel!==t.dataset.sel){ui.sel=t.dataset.sel;ui.cfg="rec";ui.lv=null}renderView();return}
