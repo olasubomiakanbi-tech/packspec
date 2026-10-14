@@ -321,7 +321,7 @@ function validate(d){
   d.boxes.forEach(b=>{["x","y","z"].forEach(k=>{if(!(num(b[k])>0))e.push(`Box ${b.id}: dimensions must be greater than 0.`)});if(!(num(b.G)>num(b.t)))e.push(`Box ${b.id}: rated weight must be greater than its empty weight.`)});
   d.parts.forEach(p=>{if(!(num(p.w)>0))e.push(`Part ${p.id}: unit weight must be greater than 0.`);
     if(!(num(p.lanes)>=1))e.push(`Part ${p.id}: flow rack lanes must be 1 or more.`);
-    if(!d.boxes.some(b=>b.key in p.cap))e.push(`Part ${p.id}: tick at least one box it can ship in.`);
+    if(!hasDim(p)&&!d.boxes.some(b=>b.key in p.cap))e.push(`Part ${p.id}: tick at least one box it can ship in.`);
     d.variants.forEach(v=>{if(!(num(p.usage[v.key])>=0))e.push(`Part ${p.id}: quantity per vehicle on ${v.name} must be 0 or more.`)})});
   return [...new Set(e)];
 }
@@ -332,6 +332,13 @@ function laneFit(b,s){
   if(b.z<=num(s.ruleH)+EPS){if(b.y<=W+EPS)opts.push({along:b.x,across:b.y,bpl:fl(D/b.x)}); if(b.x<=W+EPS)opts.push({along:b.y,across:b.x,bpl:fl(D/b.y)})}
   return opts.filter(o=>o.bpl>=1).sort((a,c)=>c.bpl-a.bpl)[0]||null;
 }
+/* fit from part size: best of the six ways to stand the part in the box, rows x columns x layers, inside the box walls */
+const WALL_LW=1, WALL_H=0.5;
+const hasDim=p=>p.dim&&num(p.dim.l)>0&&num(p.dim.w)>0&&num(p.dim.h)>0;
+function fitFromDims(p,b){if(!hasDim(p))return null;const L=b.x-WALL_LW,W=b.y-WALL_LW,H=b.z-WALL_H,d=[num(p.dim.l),num(p.dim.w),num(p.dim.h)];
+  const perm=[[0,1,2],[0,2,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0]];let best=0;
+  for(const [i,j,k] of perm)best=Math.max(best,fl(L/d[i])*fl(W/d[j])*fl(H/d[k]));return best}
+function capsFromDims(p,boxes){const c={};for(const b of boxes){const f=fitFromDims(p,b);if(f>=1)c[b.key]=f}return c}
 /* squared supplier pallet: same pattern every layer, full layers only */
 function palletFor(b,g){
   const cr=data.carrier,s=data.scenario,PL=palletLimit();
@@ -346,7 +353,7 @@ function evalPart(d,p){
   if(dem<=EPS){out.status="none";return out}
   const lanesAv=num(p.lanes);
   for(const b of d.boxes){
-    if(!(b.key in p.cap))continue;
+    if(!(b.key in p.cap)){if(hasDim(p)&&fitFromDims(p,b)<1)out.combos.push({b,C:0,n:0,nW:0,reason:{code:"R0",text:`a ${fin(p.dim.l)} × ${fin(p.dim.w)} × ${fin(p.dim.h)} in part does not fit inside ${b.id} (${fin(b.x-WALL_LW)} × ${fin(b.y-WALL_LW)} × ${fin(b.z-WALL_H)} in inside)`}});continue}
     const C=num(p.cap[b.key]),Geff=Math.min(b.G,num(s.ruleWt)),nW=fl((Geff-b.t)/p.w),n=Math.min(C||Infinity,nW);
     const co={b,C,Geff,nW,n,nBy:(C&&C<=nW)?"fit limit":"30 lb rule",reason:null};out.combos.push(co);
     if(!boxRuleOK(b,s)){co.reason={code:"R1",text:`${fin(b.x)} × ${fin(b.y)} × ${fin(b.z)} in is larger than the ${s.ruleL} × ${s.ruleW} × ${s.ruleH} in box rule`};continue}
@@ -425,7 +432,7 @@ function renderChips(){
   const lanes=act.reduce((a,x)=>a+(x.best?x.best.lanesNeed:0),0), lanesAv=act.reduce((a,x)=>a+num(x.part.lanes),0);
   const moves=act.reduce((a,x)=>a+(x.best?x.best.moves:0),0), curMoves=act.reduce((a,x)=>a+(x.cur?x.cur.moves:0),0), curBad=act.filter(x=>x.cur&&!x.cur.ok).length;
   $("#chips").innerHTML=[[ok===act.length?"good":"bad","Parts meeting target",`${ok} / ${act.length}`],["","Rack lanes used",`${lanes} / ${lanesAv}`],["","Box moves per shift",f0(moves)],
-    ["","Coverage target",`${fin(num(data.scenario.T))} h`],[curBad?"bad":"good","Current packs breaking rules",`${curBad} / ${act.filter(x=>x.cur).length}`]]
+    ["","Coverage target",`${fin(num(data.scenario.T))} h`],act.some(x=>x.cur)?[curBad?"bad":"good","Current packs breaking rules",`${curBad} / ${act.filter(x=>x.cur).length}`]:["","Current supplier packs","Not entered"]]
     .map(([c,k,v])=>`<div class="chip ${c}"><span class="eyebrow">${k}</span><span class="v">${v}</span></div>`).join("");
 }
 
@@ -821,38 +828,47 @@ function exportJSON(){const t=JSON.stringify(data,null,2);try{const a=document.c
 function showText(title,t){$("#view").insertAdjacentHTML("afterbegin",`<div class="card"><div class="card-head"><h3>${esc(title)}</h3><span class="muted">Select all and copy.</span></div><textarea id="txt-out" readonly>${esc(t)}</textarea></div>`);$("#txt-out").select()}
 
 
-/* ============ Excel import (PackSpec input workbook) ============ */
+/* ============ Excel import (PackSpec parts workbook) ============ */
+/* Needs a Parts sheet: Part Number, Description, Length, Width, Height (in), Unit Weight (lb), one QPV column per variant, optional Flow Rack Lanes.
+   Optional sheets: Line (or Scenario) for line rate, coverage and variant shares; Variants; Boxes; Fit Limits. Anything missing keeps the app's current setting. */
 function fromWorkbook(buf){
   if(typeof XLSX==="undefined")throw new Error("The Excel reader did not load. Check the internet connection and reload.");
   const wb=XLSX.read(buf,{type:"array"});
-  const rows=n=>{const k=Object.keys(wb.Sheets).find(x=>x.trim().toLowerCase()===n.toLowerCase());if(!k)throw new Error(`The workbook has no "${n}" sheet`);return XLSX.utils.sheet_to_json(wb.Sheets[k],{defval:""})};
+  const find=n=>Object.keys(wb.Sheets).find(x=>x.trim().toLowerCase()===n.toLowerCase());
+  const rows=(n,need)=>{const k=find(n);if(!k){if(need)throw new Error(`The workbook has no "${n}" sheet`);return null}return XLSX.utils.sheet_to_json(wb.Sheets[k],{defval:""})};
   const norm=t=>String(t).toLowerCase().replace(/\s+/g," ").trim();
   const col=(r,...names)=>{const ks=Object.keys(r);for(const n of names){const k=ks.find(x=>norm(x)===norm(n))||ks.find(x=>norm(x).startsWith(norm(n)));if(k!==undefined)return r[k]}return ""};
   const nv=v=>(v===""||v===null||v===undefined||isNaN(Number(v)))?null:Number(v);
-  const base=testCase(),scenario={...base.scenario},carrier={...base.carrier};
-  for(const r of rows("Scenario")){const f=String(col(r,"Field")).trim();if(!f)continue;const v=nv(col(r,"Value"));
-    if(f.startsWith("carrier."))carrier[f.slice(8)]=v;
+  const scenario={...data.scenario},carrier={...data.carrier};let variants=[];
+  for(const r of (rows("Line")||rows("Scenario")||[])){const f=String(col(r,"Field")).trim();if(!f)continue;const v=nv(col(r,"Value"));
+    if(f.startsWith("share.")){if(v!==null)variants.push({name:f.slice(6),share:v})}
+    else if(f.startsWith("carrier."))carrier[f.slice(8)]=v;
     else if(f==="alpha")scenario.alpha=v===null?0:(v<1?+(v*100).toFixed(4):v);
     else if(f==="rank"){const t=String(col(r,"Value")).trim();if(RANKS[t])scenario.rank=t}
-    else scenario[f]=v}
-  let variants=rows("Variants").map(r=>({name:String(col(r,"Variant")).trim(),share:nv(col(r,"Share"))})).filter(v=>v.name&&v.share!==null&&!/^(total|check)$/i.test(v.name));
-  if(!variants.length)throw new Error("No variants found on the Variants sheet");
+    else if(f in scenario)scenario[f]=v}
+  const vr=rows("Variants");if(vr)variants=vr.map(r=>({name:String(col(r,"Variant")).trim(),share:nv(col(r,"Share"))})).filter(v=>v.name&&v.share!==null&&!/^(total|check)$/i.test(v.name));
+  if(!variants.length)variants=data.variants.map(v=>({name:v.name,share:v.share}));
   const tot=variants.reduce((a,v)=>a+v.share,0);if(tot<=1.0001)variants.forEach(v=>v.share=+(v.share*100).toFixed(4));
   variants=variants.map(v=>({key:newKey("v"),...v}));
-  const boxes=rows("Boxes").map(r=>({id:String(col(r,"Box ID")).trim(),name:String(col(r,"Name")).trim(),x:nv(col(r,"Length")),y:nv(col(r,"Width")),z:nv(col(r,"Height")),t:nv(col(r,"Empty weight")),G:nv(col(r,"Rated load"))}))
-    .filter(b=>b.id&&b.x!==null).map(b=>({key:newKey("b"),...b}));
-  if(!boxes.length)throw new Error("No boxes found on the Boxes sheet");
+  let boxes=data.boxes.map(b=>({...b}));const br=rows("Boxes");
+  if(br){const bb=br.map(r=>({id:String(col(r,"Box ID")).trim(),name:String(col(r,"Name")).trim(),x:nv(col(r,"Length")),y:nv(col(r,"Width")),z:nv(col(r,"Height")),t:nv(col(r,"Empty weight")),G:nv(col(r,"Rated load"))}))
+    .filter(b=>b.id&&b.x!==null).map(b=>({key:newKey("b"),...b}));if(bb.length)boxes=bb}
   const byId=Object.fromEntries(boxes.map(b=>[b.id,b.key]));
-  const fit={};for(const r of rows("Fit Limits")){const id=String(col(r,"Part ID")).trim();if(!id)continue;fit[id]={};
+  const fit={};for(const r of (rows("Fit Limits")||[])){const id=String(col(r,"Part Number","Part ID")).trim();if(!id)continue;fit[id]={};
     for(const b of boxes){const v=nv(r[b.id]);if(v!==null&&v>=1)fit[id][b.key]=Math.floor(v)}}
-  const parts=rows("Parts").map(r=>{const id=String(col(r,"Part ID")).trim();if(!id)return null;
-    const usage={};for(const v of variants)usage[v.key]=nv(col(r,"QPV "+v.name))??0;
+  const noSize=[];
+  const parts=rows("Parts",true).map(r=>{const id=String(col(r,"Part Number","Part ID")).trim();if(!id)return null;
+    const usage={};for(const v of variants){const q=nv(col(r,"QPV "+v.name));usage[v.key]=q===null?(variants.length===1?(nv(col(r,"QPV"))??0):0):q}
+    const dim={l:nv(col(r,"Length","Part Length")),w:nv(col(r,"Width","Part Width")),h:nv(col(r,"Height","Part Height"))};
+    if(nv(col(r,"Unit Weight","Weight"))===null&&dim.l===null&&dim.w===null&&dim.h===null)return null;
+    const p={key:newKey("p"),id,desc:String(col(r,"Description")).trim()||id,w:nv(col(r,"Unit Weight","Weight")),usage,lanes:nv(col(r,"Flow Rack Lanes","Lanes"))??4,dim};
+    p.cap=fit[id]&&Object.keys(fit[id]).length?fit[id]:capsFromDims(p,boxes);
+    if(!hasDim(p)){delete p.dim;if(!Object.keys(p.cap).length)noSize.push(id)}
     const cb=byId[String(col(r,"Current Box")).trim()];
-    return {key:newKey("p"),id,desc:String(col(r,"Description")).trim()||id,w:nv(col(r,"Unit Weight")),usage,cap:fit[id]||{},lanes:nv(col(r,"Flow Rack Lanes"))??1,
-      cur:{box:cb||"",qpc:nv(col(r,"Current QPC")),bpp:nv(col(r,"Current Boxes per Pallet"))}}}).filter(Boolean);
+    if(cb)p.cur={box:cb,qpc:nv(col(r,"Current QPC")),bpp:nv(col(r,"Current Boxes per Pallet"))};
+    return p}).filter(Boolean);
   if(!parts.length)throw new Error("No parts found on the Parts sheet");
-  const miss=parts.filter(p=>!Object.keys(p.cap).length).map(p=>p.id);
-  if(miss.length)setTimeout(()=>toast(`No fit limits for ${miss.slice(0,4).join(", ")}${miss.length>4?"…":""}. Tick boxes on the Inputs tab.`),2600);
+  if(noSize.length)throw new Error(`Add length, width and height for ${noSize.slice(0,4).join(", ")}${noSize.length>4?"…":""}`);
   return {scenario,variants,boxes,carrier,parts};
 }
 /* ============ Boot ============ */
