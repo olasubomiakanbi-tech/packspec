@@ -427,13 +427,13 @@ function renderPresets(){
   if(ln&&act!==ln){const L=[...new Set(data.parts.map(p=>num(p.lanes)))];ln.value=L.length===1&&L[0]!==null?L[0]:""}
   $("#scen-desc").textContent=ui.dirty?"Your own inputs (opened from Excel or edited). Picking a test scenario replaces them with the test case.":PRESETS[ui.preset].desc+" Test data are invented.";
 }
-const TABS=[["results","Results"],["compare","Mixed vs single"],["check","Calculation check"],["scenario","Scenario & rules"],["parts","Parts & BOM"],["boxes","Boxes"],["carrier","Pallet & dolly"]];
+const TABS=[["results","Results"],["compare","Mixed vs single"],["impact","Approval impact"],["check","Calculation check"],["scenario","Scenario & rules"],["parts","Parts & BOM"],["boxes","Boxes"],["carrier","Pallet & dolly"]];
 function renderTabs(){$("#tabs").innerHTML=TABS.map(([k,l])=>`<button type="button" role="tab" data-tab="${k}" aria-selected="${ui.tab===k}">${l}</button>`).join("")}
 let last={errs:[],results:[]};
 function recompute(full){
   last=computeAll(); if(!full)ui.lv=null;
   $("#errors").innerHTML=last.errs.length?`<div class="errors" role="alert"><strong>Results are paused until these inputs are fixed:</strong><ul>${last.errs.map(e=>`<li>${esc(e)}</li>`).join("")}</ul></div>`:"";
-  renderChips(); if(full||ui.tab==="results"||ui.tab==="check"||ui.tab==="compare")renderView(); renderPresets(); save();
+  renderChips(); if(full||ui.tab==="results"||ui.tab==="check"||ui.tab==="compare")renderView(); else if(ui.tab==="impact")updateImpact(); renderPresets(); save();
 }
 function renderChips(){
   const r=last.results; if(!r.length){$("#chips").innerHTML="";return}
@@ -714,8 +714,9 @@ function carrierView(){const c=data.carrier;
   <div class="form-grid">${cfld("X","Pallet length (in)",c.X,"Standard 52")}${cfld("Y","Pallet width (in)",c.Y,"Standard 50")}${cfld("palH","Pallet height (in)",c.palH,"Placeholder")}${cfld("palT","Pallet weight (lb)",c.palT,"Not counted in the 1,500 lb load")}${cfld("dolH","Dolly deck height (in)",c.dolH,"Placeholder")}${cfld("dolT","Dolly weight (lb)",c.dolT,"Only for the AMR payload check")}</div>
   <p class="note">Pallet and dolly heights and weights are placeholders. Replace them with plant values.</p></div>`}
 function renderView(){
-  const v={results:resultsView,compare:compareView,check:checkView,scenario:scenarioView,parts:partsView,boxes:boxesView,carrier:carrierView}[ui.tab];
+  const v={results:resultsView,compare:compareView,impact:impactView,check:checkView,scenario:scenarioView,parts:partsView,boxes:boxesView,carrier:carrierView}[ui.tab];
   $("#view").innerHTML=`<div class="panel">${v()}</div>`;
+  if(ui.tab==="impact")updateImpact();
   if(ui.tab==="results"){const key=ui.sel+"|"+ui.cfg;mountViewer(ui.mounted!==key);ui.mounted=key}
 }
 
@@ -802,6 +803,7 @@ document.addEventListener("input",e=>{
   const el=e.target;if(el.id==="rng-l"){updateL(Number(el.value));return}
   if(el.type==="checkbox"||el.tagName==="SELECT")return;
   const v=el.type==="number"?(el.value===""?null:Number(el.value)):el.value;
+  if(el.dataset.imp){data.impact=data.impact||{...IMPACT_DEF};data.impact[el.dataset.imp]=v;save();updateImpact();return}
   if(el.id==="in-uph"){data.scenario.R=v;markDirty();recompute(false);return}
   if(el.id==="in-lanes"){if(num(v)>=1){const n=Math.floor(v);data.scenario.lanesAll=n;data.parts.forEach(p=>p.lanes=n);markDirty();recompute(false);if(ui.tab==="parts")renderView()}return}
   if(el.dataset.s){data.scenario[el.dataset.s]=v;markDirty();recompute(false);return}
@@ -822,7 +824,7 @@ document.addEventListener("change",e=>{
   if(el.dataset.box&&ui.tab==="boxes"){renderView();return}
   if(el.id==="file-in"&&el.files[0]){const f=el.files[0],isX=/\.(xlsx|xlsm|xls)$/i.test(f.name),r=new FileReader();
     r.onload=()=>{try{
-      if(isX){const d=fromWorkbook(r.result);data=d;ui.dirty=true;ui.sel=d.parts[0].key;ui.cfg="rec";ui.lv=null;ui.mounted=null;recompute(true);toast(`Opened ${d.parts.length} parts, ${d.boxes.length} boxes from Excel`);return}
+      if(isX){const d=fromWorkbook(r.result);if(data.impact)d.impact=data.impact;data=d;ui.dirty=true;ui.sel=d.parts[0].key;ui.cfg="rec";ui.lv=null;ui.mounted=null;recompute(true);toast(`Opened ${d.parts.length} parts, ${d.boxes.length} boxes from Excel`);return}
       const d=JSON.parse(r.result);if(!d.parts||!d.boxes||!d.carrier||!d.scenario||!d.scenario.laneDepth)throw 0;data=d;ui.dirty=true;recompute(true);toast("Inputs opened")}
       catch(e){toast(e&&e.message?e.message:"That file is not a saved input set from this version of the app")}};
     isX?r.readAsArrayBuffer(f):r.readAsText(f);el.value=""}
@@ -838,6 +840,58 @@ function exportJSON(){const t=JSON.stringify(data,null,2);try{const a=document.c
   navigator.clipboard.writeText(t).then(()=>toast("Inputs saved to a file where allowed, and copied"),()=>showText("Saved inputs (JSON)",t))}
 function showText(title,t){$("#view").insertAdjacentHTML("afterbegin",`<div class="card"><div class="card-head"><h3>${esc(title)}</h3><span class="muted">Select all and copy.</span></div><textarea id="txt-out" readonly>${esc(t)}</textarea></div>`);$("#txt-out").select()}
 
+
+
+/* ============ Approval impact (estimate of supplier review effort) ============ */
+const IMPACT_DEF={N:250,p:60,R:3,w:2,h:2.5,a:80,rate:49.25};
+function impactCalc(c){
+  const I={...IMPACT_DEF,...(data.impact||{})},N=num(I.N)||0,p=(num(I.p)||0)/100,Rr=Math.max(1,num(I.R)||1),w=num(I.w)||0,h=num(I.h)||0,a=(num(I.a)||0)/100,rate=num(I.rate)||0;
+  const perBase=c*(1+p*(Rr-1))+(1-c)*Rr, perPS=c*(1+(1-a))+(1-c)*Rr;
+  const rb=N*perBase, rp=N*perPS, saved=rb-rp;
+  return {I,N,c,p,Rr,w,h,a,rate,rb,rp,saved,hours:saved*h,cost:saved*h*rate,
+    firstBase:N*c*(1-p), firstPS:N*c*a, wkBase:(1+p*(Rr-1))*w, wkPS:(1+(1-a))*w};
+}
+function impactNumbers(){
+  const act=last.results.filter(x=>x.status!=="none"),ok=act.filter(x=>x.best);
+  const c=act.length?ok.length/act.length:0, curs=act.filter(x=>x.cur), curBad=curs.filter(x=>!x.cur.ok).length;
+  return {act,ok,c,curs,curBad,m:impactCalc(c)};
+}
+function impactView(){
+  if(last.errs.length)return "";
+  const {act,ok,c,curs,curBad,m}=impactNumbers(), I=m.I;
+  const inp=(k,label,hint,attrs="")=>`<div class="field"><label for="imp-${k}">${label}</label><input type="number" id="imp-${k}" data-imp="${k}" value="${I[k]??""}" ${attrs}>${hint?`<span class="hint">${hint}</span>`:""}</div>`;
+  return `<div class="card"><div class="card-head"><h2>Approval impact</h2><span class="muted">An estimate of supplier review effort with and without a PackSpec recommendation. Every assumption below can be changed.</span></div>
+    <p class="muted" style="margin:0 0 12px">Today a supplier proposes packaging and the plant reviews it; a proposal that misses a rule goes round again. With PackSpec the plant sends a recommendation that already meets every rule. Parts with no workable box follow the usual route in both cases.</p>
+    <div class="chips" id="imp-chips" style="margin-bottom:14px"></div>
+    <div class="form-grid">
+      ${inp("N","Parts to approve","Parts in the area or program","step='1' min='1'")}
+      ${inp("p","Supplier proposals that fail first review (%)","Share that miss at least one plant rule","step='1' min='0' max='100'")}
+      ${inp("R","Review rounds for a failed proposal","Total rounds until buy-off","step='0.5' min='1'")}
+      ${inp("w","Weeks per review round","From feedback to revised proposal","step='0.5' min='0'")}
+      ${inp("h","Engineering hours per round, per part","Checking, meeting, feedback","step='0.5' min='0'")}
+      ${inp("a","Recommendations accepted first time (%)","Supplier agrees without changes; others take one more round","step='1' min='0' max='100'")}
+      ${inp("rate","Engineering cost per hour ($)","Default: U.S. median wage for industrial engineers, May 2025 (BLS)","step='0.01' min='0'")}
+    </div>
+    <p class="muted" style="margin:12px 0 0">Share of parts with a recommendation that meets every rule (from the Results tab): <strong>${ok.length} of ${act.length}</strong> (${f0(c*100)}%).${curs.length?` Current supplier packs entered: ${curs.length}, of which ${curBad} break at least one rule (${f0(curBad/curs.length*100)}%).`:""}</p>
+    </div>
+    <div class="card"><div class="card-head"><h2>How the estimate works</h2></div>
+    <ul class="diff" id="imp-how"></ul></div>`;
+}
+function updateImpact(){
+  const el=$("#imp-chips"); if(!el)return renderView();
+  const {m}=impactNumbers();
+  el.innerHTML=`
+    <div class="chip good"><span class="eyebrow">Review rounds</span><span class="v">${f0(m.rb)} → ${f0(m.rp)}</span></div>
+    <div class="chip good"><span class="eyebrow">Engineering hours saved</span><span class="v">${f0(m.hours)}</span></div>
+    <div class="chip good"><span class="eyebrow">Engineering cost saved</span><span class="v">$${f0(m.cost)}</span></div>
+    <div class="chip"><span class="eyebrow">Approved after first round</span><span class="v">${f0(m.firstBase/m.N*100||0)}% → ${f0(m.firstPS/m.N*100||0)}%</span></div>
+    <div class="chip"><span class="eyebrow">Weeks to approve a workable part</span><span class="v">${f1(m.wkBase)} → ${f1(m.wkPS)}</span></div>`;
+  const how=$("#imp-how"); if(how)how.innerHTML=`
+    <li><strong>Without PackSpec.</strong> Each part with a workable box needs 1 + ${f2(m.p)} × (${fin(m.Rr)} − 1) = ${f2(1+m.p*(m.Rr-1))} review rounds on average; each part without one needs ${fin(m.Rr)}.</li>
+    <li><strong>With PackSpec.</strong> Each part with a workable box needs 1 + (1 − ${f2(m.a)}) = ${f2(1+(1-m.a))} rounds on average; parts without one still need ${fin(m.Rr)}.</li>
+    <li><strong>Total.</strong> ${f0(m.N)} parts × (${f0(m.c*100)}% with a workable box) gives ${f0(m.rb)} rounds without PackSpec and ${f0(m.rp)} with it, a saving of ${f0(m.saved)} rounds × ${fin(m.h)} h = ${f0(m.hours)} engineering hours, or $${f0(m.cost)} at $${f2(m.rate)} per hour.</li>
+    <li><strong>Not counted.</strong> Supplier time, faster launch readiness, and the time to work out a specification by hand. Review effort for parts without a workable box is assumed unchanged.</li>`;
+}
 
 /* ============ Excel import (PackSpec parts workbook) ============ */
 /* Needs a Parts sheet: Part Number, Description, Length, Width, Height (in), Unit Weight (lb), one QPV column per variant, optional Flow Rack Lanes.
