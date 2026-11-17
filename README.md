@@ -1,5 +1,7 @@
 # PackSpec — Packaging Configuration App
 
+Built by **Olasubomi Akanbi** as a graduate capstone at Bowling Green State University. Live app: https://olasubomiakanbi-tech.github.io/packspec/
+
 PackSpec works out how a supplier should pack each part for a mixed-model assembly line:
 
 - parts per box under the box rules (30 × 30 × 12 in, 30 lb),
